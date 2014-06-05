@@ -17,7 +17,7 @@
 
 package org.apache.spark.examples.streaming
 
-import org.apache.spark.streaming.{Seconds, StreamingContext}
+import org.apache.spark.streaming.{Minutes, Seconds, StreamingContext}
 import StreamingContext._
 import org.apache.spark.SparkContext._
 import org.apache.spark.streaming.twitter._
@@ -56,33 +56,61 @@ object TwitterProfanityDetector {
     ssc.checkpoint(".")
     val stream = TwitterUtils.createStream(ssc, None, filters)
 
+    // Pull the blacklist into an RDD for reuse with each batch
     val blacklist = ssc.sparkContext.textFile("blacklist.txt")
                        .flatMap(line => line.split(","))
                        .map(word => (word, 1))
                        .persist()
 
+    // The flow here is to:
+    // 1. Split each status into words
+    // 2. Associate each word with the status it came from
+    // 3. Join from the blacklist to the words (this discards any non-profane tweets)
+    // 4. Pull out the status IDs of any profane tweets
+    // 5. Identify the distinct status IDs
     val profaneTweets = stream.flatMap(status => status.getText.split(" ")
                               .map(word => (word, status.getId)))
-                              .transform(rdd => rdd.join(blacklist).map{case (word, id) => id._1}.distinct)
+                              .transform(rdd => rdd.join(blacklist)
+                                                   .map{case (word, id) => id._1}
+                                                   .distinct)
 
-    val profaneTweets10 = profaneTweets.countByWindow(Seconds(10), Seconds(10))
+    val profaneTweets1 = profaneTweets.countByWindow(Minutes(1), Minutes(1))
+    val totalTweets1 = stream.countByWindow(Minutes(1), Minutes(1))
 
-    val totalTweetsBatch = stream.count().map(cnt => "Received " + cnt + " tweets." ).print()
-    val totalTweets10 = stream.countByWindow(Seconds(10), Seconds(10))
+    val profaneTweets5 = profaneTweets.countByWindow(Minutes(5), Minutes(1))
+    val totalTweets5 = stream.countByWindow(Minutes(5), Minutes(1))
 
-    totalTweets10.foreachRDD(rdd => {
+    val profaneTweets60 = profaneTweets.countByWindow(Minutes(60), Minutes(1))
+    val totalTweets60 = stream.countByWindow(Minutes(60), Minutes(1))
+
+    totalTweets1.foreachRDD(rdd => {
       val tweetCount = rdd.take(1)
-      tweetCount.foreach{case (count) => println("\nTotal tweets in last 10 seconds: %d".format(count))}
+      tweetCount.foreach{case (count) => println("\nTotal tweets in last minute: %d".format(count))}
     })
 
-    profaneTweets10.foreachRDD(rdd => {
+    profaneTweets1.foreachRDD(rdd => {
       val tweetCount = rdd.take(1)
-      tweetCount.foreach{case (count) => println("\nProfane tweets in last 10 seconds: %d".format(count))}
+      tweetCount.foreach{case (count) => println("\nProfane tweets in last minute: %d".format(count))}
     })
 
-    profaneTweets.foreachRDD(rdd => {
-      val tuples = rdd.take(10)
-      tuples.foreach(id => println("%s".format(id)))
+    totalTweets5.foreachRDD(rdd => {
+      val tweetCount = rdd.take(1)
+      tweetCount.foreach{case (count) => println("\nTotal tweets in last 5 minutes: %d".format(count))}
+    })
+
+    profaneTweets5.foreachRDD(rdd => {
+      val tweetCount = rdd.take(1)
+      tweetCount.foreach{case (count) => println("\nProfane tweets in last 5 minutes: %d".format(count))}
+    })
+
+    totalTweets60.foreachRDD(rdd => {
+      val tweetCount = rdd.take(1)
+      tweetCount.foreach{case (count) => println("\nTotal tweets in last hour: %d".format(count))}
+    })
+
+    profaneTweets60.foreachRDD(rdd => {
+      val tweetCount = rdd.take(1)
+      tweetCount.foreach{case (count) => println("\nProfane tweets in last hour: %d".format(count))}
     })
 
     ssc.start()
